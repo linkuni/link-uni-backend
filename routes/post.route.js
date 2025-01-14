@@ -15,7 +15,8 @@ import {
     downloadPost,
     filterPost,
     savedPosts,
-    reportPost
+    reportPost, 
+    getPresignedUrl
  } from "../controllers/post.controller.js"
  import multer from "multer";
  import path from "path";
@@ -63,6 +64,7 @@ router.put("/:postId/report", isAuthenticated, reportPost)
 router.post("/upload", isAuthenticated, uploadPost)
 router.get("/download-file/:postId",isAuthenticated, downloadPost)
 router.post("/filter", filterPost)
+router.get("/preview/:postId", isAuthenticated, getPresignedUrl)
 
 
 

@@ -12,6 +12,7 @@
   "author": "https://github.com/chhavikant-01",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/s3-request-presigner": "^3.726.1",
     "aws-sdk": "^2.1691.0",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^2.4.3",

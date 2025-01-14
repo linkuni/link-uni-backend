@@ -4,6 +4,7 @@ import getPosts from "../utils/getPosts.js";
 import path from "path";
 import { fileURLToPath } from 'url';
 import { S3Client, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from 'multer';
 import multerS3 from 'multer-s3';
 import stream from 'stream';
@@ -482,4 +483,38 @@ export const reportPost = async (req, res, next) => {
     res.status(500).json({message: e.message})
   }
 }
+
+// Function to generate a presigned URL for a file in S3
+export const getPresignedUrl = async (req, res, next) => {
+  try{
+    const postId = req.params.postId;
+    const post = await Post.findById(postId);
+    if(!post){
+      return res.status(404).json({message: "Post doesn't exist!"})
+    }
+    const key = post.fileKey;
+    const client = new S3Client({ 
+      region: process.env.AWS_REGION,
+      credentials: {
+        accessKeyId: process.env.S3_PRESIGNED_URL_ACCESS_KEY,
+        secretAccessKey: process.env.S3_PRESIGNED_URL_SECRET_ACCESS_KEY
+      }
+    });
+    
+    const command = new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: key,
+    });
+    
+    try {
+      const signedUrl = await getSignedUrl(client, command, { expiresIn: 3600 });
+      return res.status(200).json({signedUrl});
+    } catch (error) {
+      console.error('Error generating presigned URL:', error);
+      throw error;
+    }
+  }catch(e){
+    res.status(500).json({message: e.message})
+  }
+};
 
