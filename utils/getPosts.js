@@ -5,6 +5,7 @@ import User from "../models/user.model.js";
 const getPosts = async () => {
     try {
         const result = await Post.aggregate([
+            // First lookup - users
             {
                 $lookup: {
                     from: "users",
@@ -13,12 +14,32 @@ const getPosts = async () => {
                     as: "author"
                 }
             },
+            // Second lookup - summaries 
+            {
+                $lookup: {
+                    from: "summaries", // MongoDB collection name (model name in lowercase + 's')
+                    localField: "_id",
+                    foreignField: "postId",
+                    as: "summary"
+                }
+            },
+            // Third lookup - exams
+            {
+                $lookup: {
+                    from: "exams", // MongoDB collection name (model name in lowercase + 's')
+                    localField: "_id",
+                    foreignField: "postId",
+                    as: "exam"
+                }
+            },
+            // Unwind the author array
             {
                 $unwind: {
                     path: "$author",
                     preserveNullAndEmptyArrays: true
                 }
             },
+            // Project fields
             {
                 $project: {
                     _id: 1,
@@ -31,9 +52,12 @@ const getPosts = async () => {
                     category: 1,
                     likes: 1,
                     comments: 1,
-                    saved:1,
+                    saved: 1,
                     createdAt: 1,
                     updatedAt: 1,
+                    processingStatus: 1,
+                    summary: 1,
+                    exam: 1,
                     author: {
                         _id: "$author._id",
                         username: "$author.username",
@@ -47,6 +71,7 @@ const getPosts = async () => {
                     }
                 }
             },
+            // Sort by creation date
             {
                 $sort: { createdAt: -1 }
             }

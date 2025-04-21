@@ -16,7 +16,10 @@ import {
     filterPost,
     savedPosts,
     reportPost, 
-    getPresignedUrl
+    getPresignedUrl,
+    checkProcessingStatus,
+    getExamQuestions,
+    getSummary
  } from "../controllers/post.controller.js"
  import multer from "multer";
  import path from "path";
@@ -65,6 +68,9 @@ router.post("/upload", isAuthenticated, uploadPost)
 router.get("/download-file/:postId",isAuthenticated, downloadPost)
 router.post("/filter", filterPost)
 router.get("/preview/:postId", isAuthenticated, getPresignedUrl)
+router.get("/:postId/processing-status", isAuthenticated, checkProcessingStatus)
+router.get("/:postId/exam-questions", isAuthenticated, getExamQuestions)
+router.get("/:postId/summary", isAuthenticated, getSummary)
 
 
 

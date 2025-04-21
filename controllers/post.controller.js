@@ -9,6 +9,10 @@ import multer from 'multer';
 import multerS3 from 'multer-s3';
 import stream from 'stream';
 import getFilterPosts from "../utils/getFilterPosts.js";
+import axios from 'axios';
+import FormData from 'form-data';
+import Exam from "../models/exam.model.js";
+import Summary from "../models/summary.model.js";
 
 const getAnonymousUserId = async () => {
   const anonymous = await User.findOne({ username: "anonymous" });
@@ -339,6 +343,10 @@ export const uploadPost = async (req, res, next) => {
           course,
           resourceType,
         },
+        processingStatus: {
+          examQuestions: "pending",
+          summary: "pending"
+        }
       });
 
       const savedPost = await newPost.save();
@@ -350,11 +358,169 @@ export const uploadPost = async (req, res, next) => {
       }
       await user.updateOne({ $push: { posts: savedPost._id } });
 
+      // Trigger the API calls in the background
+      processDocument(savedPost._id, req.file);
+
       res.status(201).json({ message: "Post successfully uploaded!", newPost: savedPost });
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
   });
+};
+
+// Function to process document using external APIs
+const processDocument = async (postId, file) => {
+  try {
+    // Get the file from S3
+    const post = await Post.findById(postId);
+    if (!post) {
+      console.error("Post not found for processing");
+      return;
+    }
+
+    // Prepare to download the file from S3
+    const params = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: post.fileKey,
+    };
+    
+    const command = new GetObjectCommand(params);
+    const s3Response = await s3Client.send(command);
+    
+    // Create a buffer from the S3 stream
+    const chunks = [];
+    for await (const chunk of s3Response.Body) {
+      chunks.push(chunk);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+
+    // Call the generate-questions API
+    generateExamQuestions(postId, fileBuffer, post.fileName);
+    
+    // Call the extract-text API
+    generateSummary(postId, fileBuffer, post.fileName);
+
+  } catch (error) {
+    console.error("Error processing document:", error);
+    await Post.findByIdAndUpdate(postId, {
+      'processingStatus.examQuestions': 'failed',
+      'processingStatus.summary': 'failed'
+    });
+  }
+};
+
+// Function to generate exam questions
+const generateExamQuestions = async (postId, fileBuffer, fileName) => {
+  try {
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'processing' });
+    
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: fileName });
+    
+    const response = await axios.post(
+      'http://127.0.0.1:5678/api/v1/generate-questions',
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+        },
+        timeout: 180000 // 3 minutes timeout
+      }
+    );
+    
+    if (response.data && response.data.questions) {
+      // Store each question in the Exam model
+      for (const question of response.data.questions) {
+        const examEntry = new Exam({
+          postId,
+          question: question.question,
+          answer: question.answer,
+          keyPoints: question.key_points,
+          tips: question.tips
+        });
+        await examEntry.save();
+      }
+      
+      // Update status to completed
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'completed' });
+    } else {
+      throw new Error("Invalid response from generate-questions API");
+    }
+  } catch (error) {
+    console.error("Error generating exam questions:", error);
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'failed' });
+  }
+};
+
+// Function to generate summary
+const generateSummary = async (postId, fileBuffer, fileName) => {
+  try {
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'processing' });
+    
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: fileName });
+    
+    const response = await axios.post(
+      'http://127.0.0.1:5678/api/v1/extract-text',
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+        },
+        timeout: 180000 // 3 minutes timeout
+      }
+    );
+    
+    if (response.data && response.data.summary) {
+      const summaryData = response.data.summary;
+      
+      // Create and save the summary
+      const summaryEntry = new Summary({
+        postId,
+        title: summaryData.title || "",
+        overview: summaryData.overview || "",
+        mainPoints: summaryData.main_points || [],
+        importantTerms: summaryData.important_terms || [],
+        benefits: summaryData.benefits || "",
+        riskOrLimitations: summaryData.risks_or_limitations || "",
+        recommendations: summaryData.recommendations || "",
+        conclusion: summaryData.conclusion || ""
+      });
+      await summaryEntry.save();
+      
+      // Update status to completed
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'completed' });
+    } else {
+      throw new Error("Invalid response from extract-text API");
+    }
+  } catch (error) {
+    console.error("Error generating summary:", error);
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'failed' });
+  }
+};
+
+// Endpoint to check processing status
+export const checkProcessingStatus = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const post = await Post.findById(postId);
+    
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    
+    // Return the processing status
+    res.status(200).json({
+      processingStatus: post.processingStatus || {
+        examQuestions: "unknown",
+        summary: "unknown"
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
 export const downloadPost = async (req, res, next) => {
@@ -515,6 +681,38 @@ export const getPresignedUrl = async (req, res, next) => {
     }
   }catch(e){
     res.status(500).json({message: e.message})
+  }
+};
+
+// Endpoint to get exam questions for a post
+export const getExamQuestions = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const examQuestions = await Exam.find({ postId });
+    
+    if (!examQuestions || examQuestions.length === 0) {
+      return res.status(404).json({ message: "No exam questions found for this post" });
+    }
+    
+    res.status(200).json({ examQuestions });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Endpoint to get summary for a post
+export const getSummary = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const summary = await Summary.findOne({ postId });
+    
+    if (!summary) {
+      return res.status(404).json({ message: "No summary found for this post" });
+    }
+    
+    res.status(200).json({ summary });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 

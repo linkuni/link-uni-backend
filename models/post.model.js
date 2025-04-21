@@ -78,7 +78,18 @@ const postSchema = new mongoose.Schema({
             type: String,
             default: "NA", 
         },
-        
+    },
+    processingStatus: {
+        examQuestions: {
+            type: String,
+            enum: ['pending', 'processing', 'completed', 'failed'],
+            default: 'pending'
+        },
+        summary: {
+            type: String,
+            enum: ['pending', 'processing', 'completed', 'failed'],
+            default: 'pending'
+        }
     }
 }, {
     timestamps: true
