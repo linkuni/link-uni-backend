@@ -27,7 +27,26 @@ const getFilterPosts = async ({ program, course, resourceType, semester, fileTyp
           foreignField: "_id",
           as: "author"
         }
+
       },
+                  // Second lookup - summaries 
+                  {
+                    $lookup: {
+                        from: "summaries", // MongoDB collection name (model name in lowercase + 's')
+                        localField: "_id",
+                        foreignField: "postId",
+                        as: "summary"
+                    }
+                },
+                // Third lookup - exams
+                {
+                    $lookup: {
+                        from: "exams", // MongoDB collection name (model name in lowercase + 's')
+                        localField: "_id",
+                        foreignField: "postId",
+                        as: "exam"
+                    }
+                },
       {
         $unwind: {
           path: "$author",
@@ -49,6 +68,8 @@ const getFilterPosts = async ({ program, course, resourceType, semester, fileTyp
           saved: 1,
           createdAt: 1,
           updatedAt: 1,
+          summary: 1,
+          exam: 1,
           author: {
             _id: "$author._id",
             username: "$author.username",

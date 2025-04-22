@@ -1,5 +1,5 @@
 import express from "express"
-import { isAuthenticated } from "../middleware/auth.js";
+import { isAuthenticated, isAdmin } from "../middleware/auth.js";
 import { 
     // createPost, 
     updatePost, 
@@ -19,7 +19,9 @@ import {
     getPresignedUrl,
     checkProcessingStatus,
     getExamQuestions,
-    getSummary
+    getSummary,
+    adminGenerateExamQuestions,
+    adminGenerateSummary
  } from "../controllers/post.controller.js"
  import multer from "multer";
  import path from "path";
@@ -72,6 +74,8 @@ router.get("/:postId/processing-status", isAuthenticated, checkProcessingStatus)
 router.get("/:postId/exam-questions", isAuthenticated, getExamQuestions)
 router.get("/:postId/summary", isAuthenticated, getSummary)
 
-
+// Admin routes - require admin privileges
+router.post("/:postId/admin/generate-exam-questions", isAuthenticated, isAdmin, adminGenerateExamQuestions)
+router.post("/:postId/admin/generate-summary", isAuthenticated, isAdmin, adminGenerateSummary)
 
 export default router

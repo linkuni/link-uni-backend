@@ -175,7 +175,8 @@ export const anonymizePost = async (req, res, next) => {
 
 export const getPost = async (req,res,next) => {
   try{
-    const post = await Post.findById(req.params.postId);
+    const posts = await getPosts()
+    const post = posts.find(post => post._id.toString() === req.params.postId)
 
     if(!post){
       return res.status(404).json({message: "Post doesn't exist!"})
@@ -425,7 +426,7 @@ const generateExamQuestions = async (postId, fileBuffer, fileName) => {
         headers: {
           ...formData.getHeaders(),
         },
-        timeout: 180000 // 3 minutes timeout
+        timeout: 1800000 // 30 minutes timeout
       }
     );
     
@@ -469,7 +470,7 @@ const generateSummary = async (postId, fileBuffer, fileName) => {
         headers: {
           ...formData.getHeaders(),
         },
-        timeout: 180000 // 3 minutes timeout
+        timeout: 1800000 // 30 minutes timeout
       }
     );
     
@@ -713,6 +714,174 @@ export const getSummary = async (req, res, next) => {
     res.status(200).json({ summary });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// Admin endpoint to manually trigger exam question generation
+export const adminGenerateExamQuestions = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const post = await Post.findById(postId);
+    
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'processing' });
+    
+    // Get the file from S3
+    const params = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: post.fileKey,
+    };
+    
+    const command = new GetObjectCommand(params);
+    const s3Response = await s3Client.send(command);
+    
+    // Create a buffer from the S3 stream
+    const chunks = [];
+    for await (const chunk of s3Response.Body) {
+      chunks.push(chunk);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+    
+    // Remove any existing exam questions for this post
+    await Exam.deleteMany({ postId });
+    
+    // Call the generate-questions API
+    res.status(202).json({ 
+      message: "Exam question generation started", 
+      status: "processing" 
+    });
+    
+    // Continue processing asynchronously
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: post.fileName });
+    
+    try {
+      const response = await axios.post(
+        'http://127.0.0.1:5678/api/v1/generate-questions',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: 300000 // 5 minutes timeout
+        }
+      );
+      
+      if (response.data && response.data.questions) {
+        // Store each question in the Exam model
+        for (const question of response.data.questions) {
+          const examEntry = new Exam({
+            postId,
+            question: question.question,
+            answer: question.answer,
+            keyPoints: question.key_points,
+            tips: question.tips
+          });
+          await examEntry.save();
+        }
+        
+        // Update status to completed
+        await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'completed' });
+      } else {
+        throw new Error("Invalid response from generate-questions API");
+      }
+    } catch (error) {
+      console.error("Error generating exam questions:", error);
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.examQuestions': 'failed' });
+    }
+  } catch (error) {
+    console.error("Error processing admin request:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// Admin endpoint to manually trigger summary generation
+export const adminGenerateSummary = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const post = await Post.findById(postId);
+    
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'processing' });
+    
+    // Get the file from S3
+    const params = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: post.fileKey,
+    };
+    
+    const command = new GetObjectCommand(params);
+    const s3Response = await s3Client.send(command);
+    
+    // Create a buffer from the S3 stream
+    const chunks = [];
+    for await (const chunk of s3Response.Body) {
+      chunks.push(chunk);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+    
+    // Remove any existing summary for this post
+    await Summary.deleteMany({ postId });
+    
+    // Send initial response to client
+    res.status(202).json({ 
+      message: "Summary generation started", 
+      status: "processing" 
+    });
+    
+    // Continue processing asynchronously
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: post.fileName });
+    
+    try {
+      const response = await axios.post(
+        'http://127.0.0.1:5678/api/v1/extract-text',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: 300000 // 5 minutes timeout
+        }
+      );
+      
+      if (response.data && response.data.summary) {
+        const summaryData = response.data.summary;
+        
+        // Create and save the summary
+        const summaryEntry = new Summary({
+          postId,
+          title: summaryData.title || "",
+          overview: summaryData.overview || "",
+          mainPoints: summaryData.main_points || [],
+          importantTerms: summaryData.important_terms || [],
+          benefits: summaryData.benefits || "",
+          riskOrLimitations: summaryData.risks_or_limitations || "",
+          recommendations: summaryData.recommendations || "",
+          conclusion: summaryData.conclusion || ""
+        });
+        await summaryEntry.save();
+        
+        // Update status to completed
+        await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'completed' });
+      } else {
+        throw new Error("Invalid response from extract-text API");
+      }
+    } catch (error) {
+      console.error("Error generating summary:", error);
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'failed' });
+    }
+  } catch (error) {
+    console.error("Error processing admin request:", error);
+    return res.status(500).json({ message: error.message });
   }
 };
 

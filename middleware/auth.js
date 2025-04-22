@@ -32,3 +32,23 @@ export const isAuthenticated = async (req, res, next) => {
         res.status(500).json({ message: "An unexpected error occurred!" });
     }
 };
+
+// Middleware to check if the user is an admin
+export const isAdmin = async (req, res, next) => {
+    try {
+        // This middleware should be used after isAuthenticated
+        if (!req.user) {
+            return res.status(401).json({ message: "Unauthorized! Please log in to continue" });
+        }
+
+        // Check if the user has admin privileges
+        if (!req.user.isAdmin) {
+            return res.status(403).json({ message: "Access denied! Admin privileges required" });
+        }
+
+        // Proceed to the next middleware if the user is an admin
+        next();
+    } catch (error) {
+        res.status(500).json({ message: "An unexpected error occurred!" });
+    }
+};
