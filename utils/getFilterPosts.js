@@ -47,6 +47,15 @@ const getFilterPosts = async ({ program, course, resourceType, semester, fileTyp
                         as: "exam"
                     }
                 },
+                // Fourth lookup - pyqs
+                {
+                    $lookup: {
+                        from: "pyqs",
+                        localField: "_id",
+                        foreignField: "postId",
+                        as: "pyq"
+                    }
+                },
       {
         $unwind: {
           path: "$author",
@@ -70,6 +79,7 @@ const getFilterPosts = async ({ program, course, resourceType, semester, fileTyp
           updatedAt: 1,
           summary: 1,
           exam: 1,
+          pyq: 1,
           author: {
             _id: "$author._id",
             username: "$author.username",

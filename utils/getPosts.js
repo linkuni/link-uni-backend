@@ -32,6 +32,16 @@ const getPosts = async () => {
                     as: "exam"
                 }
             },
+            // Fourth lookup - pyqs
+            {
+                $lookup: {
+                    from: "pyqs",
+                    localField: "_id",
+                    foreignField: "postId",
+                    as: "pyq"
+                }
+            },
+            
             // Unwind the author array
             {
                 $unwind: {
@@ -58,6 +68,7 @@ const getPosts = async () => {
                     processingStatus: 1,
                     summary: 1,
                     exam: 1,
+                    pyq: 1,
                     author: {
                         _id: "$author._id",
                         username: "$author.username",

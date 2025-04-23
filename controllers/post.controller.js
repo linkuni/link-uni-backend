@@ -13,6 +13,7 @@ import axios from 'axios';
 import FormData from 'form-data';
 import Exam from "../models/exam.model.js";
 import Summary from "../models/summary.model.js";
+import Pyq from "../models/pyq.model.js";
 
 const getAnonymousUserId = async () => {
   const anonymous = await User.findOne({ username: "anonymous" });
@@ -379,6 +380,19 @@ const processDocument = async (postId, file) => {
       return;
     }
 
+    // Update the processingStatus schema to include PYQ
+    if (!post.processingStatus) {
+      post.processingStatus = {
+        examQuestions: "pending",
+        summary: "pending",
+        pyqSolutions: "pending"
+      };
+      await post.save();
+    } else if (!post.processingStatus.pyqSolutions) {
+      post.processingStatus.pyqSolutions = "pending";
+      await post.save();
+    }
+
     // Prepare to download the file from S3
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
@@ -395,18 +409,32 @@ const processDocument = async (postId, file) => {
     }
     const fileBuffer = Buffer.concat(chunks);
 
-    // Call the generate-questions API
-    generateExamQuestions(postId, fileBuffer, post.fileName);
-    
-    // Call the extract-text API
-    generateSummary(postId, fileBuffer, post.fileName);
+    if(post.category.resourceType.toLowerCase() === "notes"){
+      // Call the generate-questions API
+      generateExamQuestions(postId, fileBuffer, post.fileName);
+      // Call the extract-text API
+      generateSummary(postId, fileBuffer, post.fileName);
+    }
+
+    if(post.category.resourceType.toLowerCase() === "pyq"){
+      // Call the academic-assistant API for PYQ solutions
+      processPyqSolutions(postId, fileBuffer, post.fileName);
+    }
 
   } catch (error) {
     console.error("Error processing document:", error);
-    await Post.findByIdAndUpdate(postId, {
-      'processingStatus.examQuestions': 'failed',
-      'processingStatus.summary': 'failed'
-    });
+    const post = await Post.findById(postId);
+    if(post.category.resourceType.toLowerCase() === "notes"){
+      await Post.findByIdAndUpdate(postId, {
+        'processingStatus.examQuestions': 'failed',
+        'processingStatus.summary': 'failed',
+      });
+    }
+    if(post.category.resourceType.toLowerCase() === "pyq"){
+      await Post.findByIdAndUpdate(postId, {
+        'processingStatus.pyqSolutions': 'failed'
+      });
+    }
   }
 };
 
@@ -420,7 +448,7 @@ const generateExamQuestions = async (postId, fileBuffer, fileName) => {
     formData.append('file', fileBuffer, { filename: fileName });
     
     const response = await axios.post(
-      'http://127.0.0.1:5678/api/v1/generate-questions',
+      `${process.env.LLM_LABS_URL}/api/v1/generate-questions`,
       formData,
       {
         headers: {
@@ -464,7 +492,7 @@ const generateSummary = async (postId, fileBuffer, fileName) => {
     formData.append('file', fileBuffer, { filename: fileName });
     
     const response = await axios.post(
-      'http://127.0.0.1:5678/api/v1/extract-text',
+      `${process.env.LLM_LABS_URL}/api/v1/summarize`,
       formData,
       {
         headers: {
@@ -502,6 +530,77 @@ const generateSummary = async (postId, fileBuffer, fileName) => {
   }
 };
 
+// Function to process PYQ solutions
+const processPyqSolutions = async (postId, fileBuffer, fileName) => {
+  try {
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'processing' });
+    
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: fileName });
+    
+    const response = await axios.post(
+      `${process.env.LLM_LABS_URL}/api/v1/academic-assistant`,
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+        },
+        timeout: 1800000 // 30 minutes timeout
+      }
+    );
+
+    if (response.data) {
+      // Create a new PYQ document to store the response
+      const pyqEntry = new Pyq({
+        postId, 
+        
+
+        academicYear: response.data.academic_year || "", 
+        
+
+        extractedText: response.data.extracted_text,
+        
+
+        preprocessedText: {
+          context: response.data.preprocessed_text.context,
+          questions: response.data.preprocessed_text.questions.map(q => ({
+            marks: q.marks,
+            questionNumber: q.question_number,
+            questionText: q.question_text
+          }))
+        },
+        
+        solutions: response.data.answer.solutions.map(sol => {
+          
+          return {
+            questionNumber: sol.question_number,
+            marks: sol.marks,
+            questionText: sol.question,
+            solution: {
+              introduction: sol.introduction,
+              keyConcepts: sol.key_concepts,
+              mainContent: sol.main_content,
+              examples: sol.examples,
+              conclusion: sol.conclusion,
+              tips: sol.tips_for_maximum_marks || []
+            }
+          };
+        })
+      });
+      
+      await pyqEntry.save();
+      
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'completed' });
+    } else {
+      throw new Error("Invalid response from academic-assistant API");
+    }
+  } catch (error) {
+    console.error("Error processing PYQ solutions:", error);
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'failed' });
+  }
+};
+
 // Endpoint to check processing status
 export const checkProcessingStatus = async (req, res, next) => {
   try {
@@ -516,7 +615,8 @@ export const checkProcessingStatus = async (req, res, next) => {
     res.status(200).json({
       processingStatus: post.processingStatus || {
         examQuestions: "unknown",
-        summary: "unknown"
+        summary: "unknown",
+        pyqSolutions: "unknown"
       }
     });
   } catch (error) {
@@ -717,6 +817,22 @@ export const getSummary = async (req, res, next) => {
   }
 };
 
+// Endpoint to get PYQ solutions for a post
+export const getPyqSolutions = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const pyqSolutions = await Pyq.findOne({ postId });
+    
+    if (!pyqSolutions) {
+      return res.status(404).json({ message: "No PYQ solutions found for this post" });
+    }
+    
+    res.status(200).json({ pyqSolutions });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // Admin endpoint to manually trigger exam question generation
 export const adminGenerateExamQuestions = async (req, res, next) => {
   try {
@@ -761,7 +877,7 @@ export const adminGenerateExamQuestions = async (req, res, next) => {
     
     try {
       const response = await axios.post(
-        'http://127.0.0.1:5678/api/v1/generate-questions',
+        `${process.env.LLM_LABS_URL}/api/v1/generate-questions`,
         formData,
         {
           headers: {
@@ -843,7 +959,7 @@ export const adminGenerateSummary = async (req, res, next) => {
     
     try {
       const response = await axios.post(
-        'http://127.0.0.1:5678/api/v1/extract-text',
+        `${process.env.LLM_LABS_URL}/api/v1/summarize`,
         formData,
         {
           headers: {
@@ -878,6 +994,112 @@ export const adminGenerateSummary = async (req, res, next) => {
     } catch (error) {
       console.error("Error generating summary:", error);
       await Post.findByIdAndUpdate(postId, { 'processingStatus.summary': 'failed' });
+    }
+  } catch (error) {
+    console.error("Error processing admin request:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// Admin endpoint to manually trigger PYQ solution generation
+export const adminGeneratePyqSolutions = async (req, res, next) => {
+  try {
+    const postId = req.params.postId;
+    const post = await Post.findById(postId);
+    
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    
+    // Update status to processing
+    await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'processing' });
+    
+    // Get the file from S3
+    const params = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: post.fileKey,
+    };
+    
+    const command = new GetObjectCommand(params);
+    const s3Response = await s3Client.send(command);
+    
+    // Create a buffer from the S3 stream
+    const chunks = [];
+    for await (const chunk of s3Response.Body) {
+      chunks.push(chunk);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+    
+    // Remove any existing PYQ solutions for this post
+    await Pyq.deleteMany({ postId });
+    
+    // Send initial response to client
+    res.status(202).json({ 
+      message: "PYQ solution generation started", 
+      status: "processing" 
+    });
+    
+    // Continue processing asynchronously
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: post.fileName });
+    
+    try {
+      const response = await axios.post(
+        `${process.env.LLM_LABS_URL}/api/v1/academic-assistant`,
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: 1800000 // 30 minutes timeout
+        }
+      );
+      
+      if (response.data) {
+        // Create a new PYQ document to store the response
+        const pyqEntry = new Pyq({
+          postId,
+          
+          academicYear: response.data.academic_year || "", 
+          
+          extractedText: response.data.extracted_text,
+          
+          preprocessedText: {
+            context: response.data.preprocessed_text.context,
+            questions: response.data.preprocessed_text.questions.map(q => ({
+              marks: q.marks,
+              questionNumber: q.question_number,
+              questionText: q.question_text
+            }))
+          },
+          
+          solutions: response.data.answer.solutions.map(sol => {
+            
+            return {
+              questionNumber: sol.question_number,
+              marks: sol.marks,
+              questionText: sol.question,
+              solution: {
+                introduction: sol.introduction,
+                keyConcepts: sol.key_concepts,
+                mainContent: sol.main_content,
+                examples: sol.examples,
+                conclusion: sol.conclusion,
+                tips: sol.tips_for_maximum_marks || []
+              }
+            };
+          })
+        });
+        
+        await pyqEntry.save();
+        
+        await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'completed' });
+      } else {
+        throw new Error("Invalid response from academic-assistant API");
+      }
+    } catch (error) {
+      console.error("Error generating PYQ solutions:", error);
+      await Post.findByIdAndUpdate(postId, { 'processingStatus.pyqSolutions': 'failed' });
     }
   } catch (error) {
     console.error("Error processing admin request:", error);

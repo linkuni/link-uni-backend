@@ -89,6 +89,11 @@ const postSchema = new mongoose.Schema({
             type: String,
             enum: ['pending', 'processing', 'completed', 'failed'],
             default: 'pending'
+        },
+        pyqSolutions: {
+            type: String,
+            enum: ['pending', 'processing', 'completed', 'failed'],
+            default: 'pending'
         }
     }
 }, {

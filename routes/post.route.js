@@ -21,7 +21,9 @@ import {
     getExamQuestions,
     getSummary,
     adminGenerateExamQuestions,
-    adminGenerateSummary
+    adminGenerateSummary,
+    getPyqSolutions,
+    adminGeneratePyqSolutions
  } from "../controllers/post.controller.js"
  import multer from "multer";
  import path from "path";
@@ -73,9 +75,11 @@ router.get("/preview/:postId", isAuthenticated, getPresignedUrl)
 router.get("/:postId/processing-status", isAuthenticated, checkProcessingStatus)
 router.get("/:postId/exam-questions", isAuthenticated, getExamQuestions)
 router.get("/:postId/summary", isAuthenticated, getSummary)
+router.get("/:postId/pyq-solutions", isAuthenticated, getPyqSolutions)
 
 // Admin routes - require admin privileges
 router.post("/:postId/admin/generate-exam-questions", isAuthenticated, isAdmin, adminGenerateExamQuestions)
 router.post("/:postId/admin/generate-summary", isAuthenticated, isAdmin, adminGenerateSummary)
+router.post("/:postId/admin/generate-pyq-solutions", isAuthenticated, isAdmin, adminGeneratePyqSolutions)
 
 export default router
